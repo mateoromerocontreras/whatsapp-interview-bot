@@ -1,0 +1,249 @@
+openapi: 3.0.3
+info:
+  title: WhatsApp Interview Bot API
+  description: |
+    REST API for a WhatsApp chatbot that guides candidates through a
+    multi-step conversation to collect personal information and schedule
+    job interviews. Built with Node.js, Express, Twilio, and MongoDB.
+
+    ## Conversation Flow
+
+    The bot drives the following state machine over WhatsApp:
+
+    ```
+    Any message → name → age → city → interview? → date → time → confirmation + Google Calendar link
+    ```
+
+    The webhook endpoint (`POST /api/webhook`) is called by Twilio on every
+    incoming WhatsApp message. All replies are sent asynchronously via the
+    Twilio REST API; the HTTP response is always `200 OK`.
+  version: 1.0.0
+  contact:
+    name: Mateo Romero Contreras
+  license:
+    name: ISC
+
+servers:
+  - url: https://<your-ngrok-subdomain>.ngrok-free.app
+    description: Local development via ngrok tunnel
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Webhook
+    description: Twilio WhatsApp webhook endpoint
+  - name: Health
+    description: Server health check
+
+paths:
+  /api/webhook:
+    post:
+      tags:
+        - Webhook
+      summary: Receive incoming WhatsApp message
+      description: |
+        Called by Twilio every time a WhatsApp message arrives on the
+        configured sandbox number. The endpoint processes the message
+        according to the current conversation step stored in MongoDB and
+        replies asynchronously via `twilioClient.messages.create()`.
+
+        **Conversation steps and responses:**
+
+        | Current step | Input | Bot reply |
+        |---|---|---|
+        | *(no session)* | any | "What's your full name?" |
+        | `awaiting_name` | any text ≥ 2 chars | "How old are you?" |
+        | `awaiting_age` | integer 16–99 | "Which city are you based in?" |
+        | `awaiting_city` | any text ≥ 2 chars | "Would you like to schedule an interview?" |
+        | `awaiting_interview_choice` | `yes` / `no` | Date prompt or goodbye |
+        | `awaiting_date` | `DD/MM/YYYY` (future) | "What time? (HH:MM)" |
+        | `awaiting_time` | `HH:MM` (24h) | Confirmation + Google Calendar link |
+        | `done` | any | Restarts conversation |
+
+      requestBody:
+        description: |
+          URL-encoded form body sent by Twilio. Only the listed fields
+          are consumed by the bot; Twilio sends additional fields that
+          are ignored.
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TwilioWebhookPayload'
+            example:
+              From: "whatsapp:+5493515462434"
+              To: "whatsapp:+14155238886"
+              Body: "hello"
+              MessageSid: "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              AccountSid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              NumMedia: "0"
+
+      responses:
+        '200':
+          description: |
+            Message received and queued for processing. The bot reply is
+            sent asynchronously via the Twilio API — this response does
+            not contain the reply text.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+        '500':
+          description: Unexpected server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Internal Server Error
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Returns a simple JSON object confirming the server is running.
+      responses:
+        '200':
+          description: Server is up
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                message: Bot is running!
+
+components:
+  schemas:
+
+    TwilioWebhookPayload:
+      type: object
+      required:
+        - From
+        - Body
+      properties:
+        From:
+          type: string
+          description: Sender's WhatsApp number in E.164 format, prefixed with `whatsapp:`.
+          example: "whatsapp:+5493515462434"
+        To:
+          type: string
+          description: Bot's WhatsApp number (Twilio sandbox or approved sender).
+          example: "whatsapp:+14155238886"
+        Body:
+          type: string
+          description: The plain-text content of the incoming message.
+          example: "hello"
+        MessageSid:
+          type: string
+          description: Unique message identifier assigned by Twilio.
+          example: "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        AccountSid:
+          type: string
+          description: Twilio Account SID.
+          example: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        NumMedia:
+          type: string
+          description: Number of media attachments (ignored by the bot).
+          example: "0"
+
+    Interview:
+      type: object
+      description: A scheduled interview record stored in MongoDB.
+      properties:
+        _id:
+          type: string
+          description: MongoDB ObjectId (auto-generated).
+          example: "664f1a2b3c4d5e6f7a8b9c0d"
+        candidateName:
+          type: string
+          example: "María García"
+        candidatePhone:
+          type: string
+          description: E.164 phone number without the `whatsapp:` prefix.
+          example: "+5493515462434"
+        candidateAge:
+          type: string
+          example: "27"
+        candidateCity:
+          type: string
+          example: "Córdoba"
+        interviewDate:
+          type: string
+          format: date-time
+          example: "2026-05-20T00:00:00.000Z"
+        interviewTime:
+          type: string
+          description: Time in 24h HH:MM format.
+          example: "14:30"
+        position:
+          type: string
+          example: "To be defined"
+        status:
+          type: string
+          enum: [scheduled, completed, cancelled]
+          default: scheduled
+        calendarLink:
+          type: string
+          format: uri
+          description: Pre-built Google Calendar "Add to Calendar" link.
+          example: "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Interview..."
+        createdAt:
+          type: string
+          format: date-time
+          example: "2026-05-13T13:00:00.000Z"
+
+    Session:
+      type: object
+      description: Per-user conversation state stored in MongoDB.
+      properties:
+        _id:
+          type: string
+          example: "664f1a2b3c4d5e6f7a8b9c0e"
+        phone:
+          type: string
+          description: E.164 phone number (unique index).
+          example: "+5493515462434"
+        step:
+          type: string
+          enum:
+            - awaiting_name
+            - awaiting_age
+            - awaiting_city
+            - awaiting_interview_choice
+            - awaiting_date
+            - awaiting_time
+            - done
+          example: "awaiting_date"
+        data:
+          type: object
+          description: Collected data accumulated during the conversation.
+          properties:
+            name:
+              type: string
+              example: "María García"
+            age:
+              type: string
+              example: "27"
+            city:
+              type: string
+              example: "Córdoba"
+            date:
+              type: string
+              description: Interview date in DD/MM/YYYY format.
+              example: "20/05/2026"
+            time:
+              type: string
+              description: Interview time in HH:MM (24h) format.
+              example: "14:30"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2026-05-13T13:05:00.000Z"
+
+    HealthResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Bot is running!"
