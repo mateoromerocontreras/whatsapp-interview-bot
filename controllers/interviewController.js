@@ -103,6 +103,15 @@ const handleIncomingMessage = async (req, res) => {
     // Update timestamp
     session.updatedAt = new Date();
 
+    // ── Global reset command ─────────────────────────────────────────────────
+    if (['reset', 'restart', 'reiniciar'].includes(msg.toLowerCase())) {
+        session.step = 'awaiting_name';
+        session.data = {};
+        await session.save();
+        await sendMessage(sender, `🔄 Conversation restarted!\n\nWhat's your *full name*?`);
+        return;
+    }
+
     // ── Step machine ─────────────────────────────────────────────────────────
     switch (session.step) {
 
